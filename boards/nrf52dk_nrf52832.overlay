@@ -1,0 +1,141 @@
+/*
+ * Board devicetree corrections: HFXO cold-start time.
+ *
+ * This board's 32 MHz crystal takes roughly 24.5 ms between TASKS_HFCLKSTART and
+ * EVENTS_HFCLKSTARTED, while the SoC devicetree declares 1400 us.
+ *
+ * MPSL uses that value as the upper bound on how long it is willing to wait after
+ * requesting HFCLK:
+ *   z_nrf_clock_bt_ctlr_hf_get_startup_time_us()
+ *       -> DT_PROP(DT_NODELABEL(hfxo), startup_time_us)   [clock_control_nrf.c:451-454]
+ *   mpsl_clock_hfclk_latency_set(...)                     [mpsl/init/mpsl_init.c:457]
+ * With 1400 us far below the real 24.5 ms, MPSL gives up waiting and raises
+ * "MPSL ASSERT: 5, 1013"; advertising never starts.
+ *
+ * Where 49000 us comes from (NCS's own Kconfig text,
+ * nrf/subsys/mpsl/init/Kconfig:91-96):
+ *   "measure the startup time. Set MPSL_HFCLK_LATENCY as twice this number
+ *    to account for temperature and supply variations.
+ *    On nRF52 and nRF53 Series devices, the startup time corresponds
+ *    to the time between TASKS_HFCLKSTART and EVENTS_HFCLKSTARTED."
+ *   -> 2 x 24500 us = 49000 us
+ *
+ * CONFIG_MPSL_HFCLK_LATENCY in prj.conf is not an alternative: the nRF52832
+ * devicetree does have an hfxo node, so mpsl_init.c:456 and mpsl_clock_ctrl.c:561
+ * take the devicetree branch and that Kconfig symbol is bypassed entirely on this
+ * platform.
+ *
+ * startup_time_us is a uint16_t in MPSL (mpsl_clock.h:439), so the ceiling is
+ * 65535 us; 49000 is within range.
+ */
+&hfxo {
+	startup-time-us = <49000>;
+};
+
+/*
+ * Buzzer on P0.12 (active HIGH), driven by PWM1 channel 0.
+ *
+ * Polarity is active HIGH, not active LOW, as the schematic confirms: the MCU pin
+ * drives the base of NPN transistor Q1 (2N3904) through R11, with R12 10K pulling
+ * the base to ground; emitter to ground, collector to the buzzer LS1 and then
+ * VCC3.3. That is a classic low-side switch:
+ *   base high -> Q1 conducts -> collector pulled to ground -> 3.3 V across the
+ *                buzzer -> sound
+ *   base low  -> Q1 off -> no current -> silent
+ * So pin high = sound and pin low = silence.
+ *
+ * Why PWM rather than GPIO: the requirement asks for the alarm rhythm to be
+ * produced through the Zephyr PWM API, and it keeps open the option of swapping in
+ * a *passive* buzzer later by driving a 2..4 kHz square wave directly -- GPIO
+ * cannot produce a square wave, PWM can. This board carries an *active* buzzer:
+ * it has its own oscillator, so neither the frequency nor the duty cycle of the
+ * waveform changes its pitch, and PWM is used here only to express "sound / no
+ * sound" plus the rhythm. See buzzer.c for the driver-level constraints.
+ *
+ * Why pwm1 and not pwm0: the board DTS (nrf52dk_nrf52832.dts:196-201) already
+ * enables pwm0 and hands it to pwmleds (P0.17). pwm1 is disabled by default and
+ * is enabled here, so the two do not interfere.
+ *
+ * P0.12 can only have one owner, which is why this file declares no buzzer-gpios
+ * and main.c configures no GPIO for it: otherwise GPIO and PWM would drive the
+ * same pin at once.
+ *
+ * The pinctrl groups mirror the board's pwm0 (nrf52dk_nrf52832-pinctrl.dtsi:61-73)
+ * except for nordic,invert, which must NOT be copied:
+ *   default -- the pin is configured as an OUTPUT with a LOW idle level
+ *     (pinctrl_nrf.c:337-341 sets dir to OUTPUT, :575-577 writes the result of
+ *     NRF_GET_INVERT; without nordic,invert that is a low level). For this board's
+ *     active-high buzzer, idle low means silent, which is exactly the wanted
+ *     power-on state. Adding the property would pull the base high the moment
+ *     pinctrl is applied and produce a chirp.
+ *   sleep -- low-power-enable forces the pin to an INPUT and disconnects it (same
+ *     file :580-583). The base is then pulled to ground by R12 and Q1 is off, so
+ *     it stays silent while asleep too.
+ *
+ * The driver has a build-time check, NRF_DT_CHECK_NODE_HAS_PINCTRL_SLEEP
+ * (pwm_nrfx.c:416), so pinctrl-1 plus "sleep" is mandatory, not just default.
+ */
+&pwm1 {
+	status = "okay";
+	pinctrl-0 = <&buzzer_pwm_default>;
+	pinctrl-1 = <&buzzer_pwm_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+&pinctrl {
+	buzzer_pwm_default: buzzer_pwm_default {
+		group1 {
+			/* nordic,invert is deliberately absent here: an active-high
+			 * buzzer needs a LOW idle level. */
+			psels = <NRF_PSEL(PWM_OUT0, 0, 12)>;
+		};
+	};
+
+	buzzer_pwm_sleep: buzzer_pwm_sleep {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 12)>;
+			low-power-enable;
+		};
+	};
+};
+
+/ {
+	zephyr,user {
+		/* The property name must be an unprefixed pwms, not buzzer-pwms.
+		 * Of all property kinds only gpio and io-channel are exempt from
+		 * the prefix rule (edtlib.py:2072-2085); everything else uses
+		 * prop.name[:-1] as the specifier space, so buzzer-pwms would
+		 * demand a #buzzer-pwm-cells declaration from the controller --
+		 * and pwm1 in nrf52832.dtsi:449 only has the standard
+		 * #pwm-cells = <3>. dtc would fail outright with
+		 * "lacks #buzzer-pwm-cells". (That is also why an earlier
+		 * buzzer-gpios could carry a prefix.)
+		 *
+		 * The polarity is PWM_POLARITY_NORMAL because the buzzer is
+		 * active high (low-side NPN):
+		 *   0% duty   -> constant INACTIVE level -> pin low  -> silent
+		 *   100% duty -> constant ACTIVE level   -> pin high -> sound
+		 * That contract is written down in pwm.h:596-599, and the driver
+		 * matches it in pwm_nrfx.c:199-207 and :238-249; it is not an
+		 * invention of this project.
+		 *
+		 * PWM_POLARITY_INVERTED must NOT be used: it would treat
+		 * active-high hardware as active low, so writing "silent" would
+		 * drive the pin high and sound the buzzer continuously. It has to
+		 * be omitted in both places -- the pinctrl group above and here --
+		 * since removing only one leaves the other still inverting.
+		 *
+		 * The polarity cell cannot be omitted: pwm1 has
+		 * #pwm-cells = <3> (nrf52832.dtsi:449), so channel, period and
+		 * flags are all required after the phandle or dtc reports
+		 * "missing data after phandle". PWM_POLARITY_NORMAL is 0
+		 * (dt-bindings/pwm/pwm.h), i.e. "do not invert".
+		 *
+		 * The period is 1 ms (16000 cycles of 16 MHz, below the COUNTERTOP
+		 * ceiling of 32767). In DC mode (0% / 100%) the driver never
+		 * validates the period at all; a legal value is given so that
+		 * producing a real 2..4 kHz square wave later needs only a period
+		 * change here, with no module code touched. */
+		pwms = <&pwm1 0 PWM_MSEC(1) PWM_POLARITY_NORMAL>;
+	};
+};

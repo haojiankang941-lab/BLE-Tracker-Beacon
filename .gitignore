@@ -1,0 +1,30 @@
+# Build output (west/ninja trees, including the diagnostic one used during bring-up)
+build/
+build_diag/
+build_*/
+
+# Build artefacts, wherever they end up
+*.hex
+*.bin
+*.elf
+*.map
+*.o
+*.obj
+*.a
+
+# Zephyr / west
+.west/
+twister-out*/
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# Local change log, kept deliberately out of the repository
+CHANGELOG.md
+
+# Images carried over from the upstream repository; not referenced here
+IMG_1.jpg
+IMG_2.jpg

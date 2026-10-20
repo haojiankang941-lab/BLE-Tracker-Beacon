@@ -1,0 +1,63 @@
+NOTICE
+======
+
+Provenance
+----------
+
+This project is derived from the LED Button Service (LBS) sample published by
+Nordic Semiconductor ASA.
+
+    Copyright (c) 2018 Nordic Semiconductor ASA
+    SPDX-License-Identifier: LicenseRef-Nordic-5-Clause
+
+The original sample is distributed with the nRF Connect SDK and with the
+nRF5 SDK. The copyright header and the SPDX licence identifier above are
+preserved verbatim in every source file of this repository.
+
+The upstream repository this work started from is:
+
+    https://github.com/Emrecanbl/BLE-Tracker-Beacon
+
+Modifications
+-------------
+
+Relative to that starting point, this repository has been reworked
+substantially. The significant changes are:
+
+  * Targeted at the nRF52832 (nRF52 DK, `nrf52dk/nrf52832`) instead of the
+    nRF52840, with board-level devicetree and Kconfig files to match.
+  * The buzzer is driven through the Zephyr PWM API (PWM1 channel 0, P0.12)
+    rather than through a GPIO, so that the alarm rhythm is produced by a
+    k_timer on top of the PWM output level.
+  * The GATT service was extended: the RSSI characteristic (0x1526) and the
+    ring-control characteristic (0x1528) were added, and the standard Battery
+    Service (0x180F) replaced a custom battery characteristic.
+  * The old application-layer password characteristic was removed. Access
+    control now relies entirely on the link-layer pairing passkey through
+    BT_GATT_PERM_WRITE_AUTHEN.
+  * New modules were added: a moving-average RSSI filter, a distance grader
+    with hysteresis, and the buzzer rhythm module.
+  * A fixed boot self-test, an LED indication scheme and crash-forensics
+    handlers were added.
+
+A file-by-file history of these changes is kept in CHANGELOG.md, which is
+deliberately not part of this repository.
+
+Licence status
+--------------
+
+`LicenseRef-Nordic-5-Clause` is a licence *reference* defined by Nordic
+Semiconductor. It is NOT an OSI-approved open-source licence, and it is not
+the same as any of the licences in the SPDX licence list.
+
+Before redistributing this code, or using it in a product, review Nordic's
+licence terms for the nRF Connect SDK and confirm that your intended use is
+permitted. Where the terms require it, keep the copyright notices and this
+NOTICE intact.
+
+Third-party components
+----------------------
+
+This project builds against the nRF Connect SDK and Zephyr, which are not
+vendored here and which carry their own licences. See the SDK installation for
+those terms.
